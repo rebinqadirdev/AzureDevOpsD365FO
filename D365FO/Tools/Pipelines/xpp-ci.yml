@@ -1,0 +1,150 @@
+
+# 4-digit version used for model versioning
+name: $(Date:yy.MM.dd)$(Rev:.r)
+
+trigger: none
+
+pool:
+  vmImage: 'windows-latest'
+
+variables:
+  # -- NuGet package versions --
+  # Update these only when required if you have new NuGet package versions that you must use.
+  PlatformVersion: '7.0.8199.55'
+  ApplicationVersion: '10.0.2790.83'
+
+  # -- Model --
+  ModelName: 'RebinModel'
+
+  # -- Paths --
+  NuGetConfigPath: '$(Build.SourcesDirectory)/Tools/Build'
+  NuGetInstallDir: '$(Build.SourcesDirectory)/NuGets'
+  MetadataPath: '$(Build.SourcesDirectory)/Metadata'
+  SolutionPath: '$(Build.SourcesDirectory)/Projects/FinanceOperations/FinanceOperations.sln'
+
+  # -- NuGet package folder names (using -ExcludeVersion for stable paths) --
+  CompilerPackage: '$(NuGetInstallDir)/Microsoft.Dynamics.AX.Platform.CompilerPackage'
+  PlatformBuildRef: '$(NuGetInstallDir)/Microsoft.Dynamics.AX.Platform.DevALM.BuildXpp'
+  App1BuildRef: '$(NuGetInstallDir)/Microsoft.Dynamics.AX.Application1.DevALM.BuildXpp'
+  App2BuildRef: '$(NuGetInstallDir)/Microsoft.Dynamics.AX.Application2.DevALM.BuildXpp'
+  AppSuiteBuildRef: '$(NuGetInstallDir)/Microsoft.Dynamics.AX.ApplicationSuite.DevALM.BuildXpp'
+
+  # -- Unified package output --
+  UnifiedPackageOutput: '$(Build.ArtifactStagingDirectory)/UnifiedPackage'
+
+stages:
+  - stage: Build
+    displayName: 'Compile X++ and Create Unified Package'
+    jobs:
+      - job: BuildXpp
+        displayName: 'Build X++ and package'
+        timeoutInMinutes: 120
+        steps:
+          - checkout: self
+            clean: true
+
+          # -------------------------------------------------------
+          # Step 1: Install NuGet packages
+          # -------------------------------------------------------
+          - task: NuGetCommand@2
+            displayName: 'Restore NuGet build packages'
+            inputs:
+              command: 'custom'
+              arguments: >
+                install "$(NuGetConfigPath)/packages.config"
+                -ConfigFile "$(NuGetConfigPath)/nuget.config"
+                -OutputDirectory "$(NuGetInstallDir)"
+                -ExcludeVersion
+                -Verbosity Detailed
+                -Noninteractive
+
+          # -------------------------------------------------------
+          # Step 2: Stamp build number into model descriptor
+          # (Metadata/RebinModel/Descriptor/RebinModel.xml)
+          # -------------------------------------------------------
+          - task: XppUpdateModelVersion@0
+            displayName: 'Update Model Version'
+            inputs:
+              XppSourcePath: '$(MetadataPath)'
+              XppDescriptorSearch: '$(MetadataPath)/$(ModelName)/Descriptor/*.xml'
+              XppLayer: 10
+              VersionNumber: '$(Build.BuildNumber)'
+
+          # -------------------------------------------------------
+          # Step 3: Build the X++ solution
+          # -------------------------------------------------------
+          - task: VSBuild@1
+            displayName: 'Build X++ solution'
+            inputs:
+              solution: '$(SolutionPath)'
+              vsVersion: '17.0'
+              msbuildArgs: >
+                /p:BuildTasksDirectory="$(CompilerPackage)/DevAlm"
+                /p:MetadataDirectory="$(MetadataPath)"
+                /p:FrameworkDirectory="$(CompilerPackage)"
+                /p:ReferenceFolder="$(PlatformBuildRef)/ref/net40;$(App1BuildRef)/ref/net40;$(App2BuildRef)/ref/net40;$(AppSuiteBuildRef)/ref/net40;$(MetadataPath);$(Build.BinariesDirectory)"
+                /p:ReferencePath="$(CompilerPackage)"
+                /p:OutputDirectory="$(Build.BinariesDirectory)"
+                /p:CompilerMetadata="$(Build.BinariesDirectory)"
+
+          # Compiler logs -> artifacts (always, even on failure)
+          - task: CopyFiles@2
+            displayName: 'Copy X++ compile log files'
+            inputs:
+              SourceFolder: '$(Build.SourcesDirectory)'
+              Contents: |
+                **\Dynamics.AX.*.xppc.*
+                **\Dynamics.AX.*.labelc.*
+                **\Dynamics.AX.*.reportsc.*
+              TargetFolder: '$(Build.ArtifactStagingDirectory)/Logs'
+            condition: succeededOrFailed()
+
+          # -------------------------------------------------------
+          # Step 4: Install NuGet 3.3.0 (required for packaging)
+          # -------------------------------------------------------
+          - task: NuGetToolInstaller@1
+            displayName: 'Install NuGet 3.3.0 for packaging'
+            inputs:
+              versionSpec: '3.3.0'
+
+          # -------------------------------------------------------
+          # Step 5: Create the Power Platform unified package
+          # -------------------------------------------------------
+          - task: XppCreatePackage@3
+            displayName: 'Create Power Platform unified package'
+            inputs:
+              XppToolsPath: '$(CompilerPackage)'
+              CreateCloudPackage: true
+              CloudPackagePlatVersion: '$(PlatformVersion)'
+              CloudPackageAppVersion: '$(ApplicationVersion)'
+              CloudPackageOutputLocation: '$(UnifiedPackageOutput)'
+              DeployablePackagePath: '$(Build.ArtifactStagingDirectory)/AXDeployableRuntime.zip'
+
+          # Enable to add a license file to the package
+          - task: XppAddLicenseToPackage@0
+            displayName: 'Add Licenses to Deployable Package'
+            enabled: false
+
+          # -------------------------------------------------------
+          # Step 6: Publish build artifacts
+          # -------------------------------------------------------
+          # Unified package is published as a folder (TemplatePackage.dll + PackageAssets/),
+          # no zip. Deploy with PackageFile pointing at TemplatePackage.dll.
+          - task: PublishBuildArtifacts@1
+            displayName: 'Publish unified package artifact'
+            inputs:
+              PathtoPublish: '$(UnifiedPackageOutput)'
+              ArtifactName: 'UnifiedPackage'
+
+          - task: PublishBuildArtifacts@1
+            displayName: 'Publish deployable runtime package artifact'
+            inputs:
+              PathtoPublish: '$(Build.ArtifactStagingDirectory)/AXDeployableRuntime.zip'
+              ArtifactName: 'LCSPackage'
+
+          - task: PublishBuildArtifacts@1
+            displayName: 'Publish compile logs'
+            inputs:
+              PathtoPublish: '$(Build.ArtifactStagingDirectory)/Logs'
+              ArtifactName: 'Logs'
+            condition: succeededOrFailed()

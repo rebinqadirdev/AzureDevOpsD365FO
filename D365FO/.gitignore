@@ -1,0 +1,25 @@
+﻿################################################################################
+# Visual Studio .gitignore
+################################################################################
+
+# Visual Studio cache and workspace files
+/.vs/
+**/.vs/
+
+# Visual Studio user-specific files
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# Build output
+**/bin/
+**/obj/
+
+# Existing D365 FO exclusions
+/Metadata/RebinModel/BuildProjectResult.xml
+/Metadata/RebinModel/XppMetadata/RebinModel/AxClass
+/Metadata/RebinModel/BuildProjectResult.log
+/Metadata/XppSource/RebinModel
+/Metadata/RebinModel/bin
+/Metadata/RebinModel/RebinModel/AxClass/RunnableClass_HelloWorld.xml

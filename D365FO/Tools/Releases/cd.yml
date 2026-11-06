@@ -1,0 +1,118 @@
+trigger: none
+
+resources:
+  pipelines:
+    - pipeline: D365FO-Release
+      source: 'D365FO-Build'   # exact name of your build pipeline in Azure DevOps
+      trigger:
+        branches:
+          include:
+            - main
+
+pool:
+  vmImage: 'windows-latest'
+
+variables:
+  - name: TestServiceConnection
+    value: 'PowerPlatform-Test'
+  - name: TestEnvironmentUrl
+    value: 'https://d365fo-uat.crm17.dynamics.com'
+
+  - name: ProductionServiceConnection
+    value: 'PowerPlatform-Production'
+  - name: ProductionEnvironmentUrl
+    value: 'https://d365fo-prod.crm17.dynamics.com'
+
+stages:
+  # ---------------------------------------------------------------------------
+  # TEST
+  # ---------------------------------------------------------------------------
+  - stage: DeployToTest
+    displayName: 'Deploy to Test'
+    jobs:
+      - deployment: DeployTest
+        displayName: 'Deploy unified package to Test'
+        environment: 'Test'
+        timeoutInMinutes: 180
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - download: D365FO-Release
+                  artifact: 'UnifiedPackage'
+                  displayName: 'Download unified package artifact'
+
+                - task: PowerPlatformToolInstaller@2
+                  displayName: 'Install Power Platform Build Tools'
+
+                - task: PowerPlatformWhoAmI@2
+                  displayName: 'Verify Test service connection'
+                  inputs:
+                    authenticationType: 'PowerPlatformSPN'
+                    PowerPlatformSPN: '$(TestServiceConnection)'
+
+                - task: PowerPlatformDeployPackage@2
+                  displayName: 'Deploy unified package to Test'
+                  inputs:
+                    authenticationType: 'PowerPlatformSPN'
+                    PowerPlatformSPN: '$(TestServiceConnection)'
+                    PackageFile: '$(Pipeline.Workspace)/D365FO-Release/UnifiedPackage/TemplatePackage.dll'
+                    Environment: '$(TestEnvironmentUrl)'
+
+  # ---------------------------------------------------------------------------
+  # APPROVAL GATE (Test -> Production)
+  # ---------------------------------------------------------------------------
+  - stage: ApproveProduction
+    displayName: 'Approve Production Deployment'
+    dependsOn: DeployToTest
+    condition: succeeded('DeployToTest')
+    jobs:
+      - job: WaitForApproval
+        displayName: 'Wait for manual approval'
+        pool: server   # agentless job, required for ManualValidation
+        timeoutInMinutes: 4320   # job timeout (3 days)
+        steps:
+          - task: ManualValidation@0
+            timeoutInMinutes: 1440   # auto-reject after 1 day
+            inputs:
+              notifyUsers: |
+                user.name@contoso.com
+              instructions: 'Test deployment succeeded. Verify Test, then Resume to deploy to Production or Reject to cancel.'
+              onTimeout: 'reject'
+
+  # ---------------------------------------------------------------------------
+  # PRODUCTION
+  # ---------------------------------------------------------------------------
+  - stage: DeployToProduction
+    displayName: 'Deploy to Production'
+    dependsOn: ApproveProduction
+    condition: succeeded('ApproveProduction')
+    jobs:
+      - deployment: DeployProduction
+        displayName: 'Deploy unified package to Production'
+        environment: 'Production'   # add approvals/checks on this environment in Azure DevOps
+        timeoutInMinutes: 180
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - download: D365FO-Release
+                  artifact: 'UnifiedPackage'
+                  displayName: 'Download unified package artifact'
+
+                - task: PowerPlatformToolInstaller@2
+                  displayName: 'Install Power Platform Build Tools'
+
+                - task: PowerPlatformWhoAmI@2
+                  displayName: 'Verify Production service connection'
+                  inputs:
+                    authenticationType: 'PowerPlatformSPN'
+                    PowerPlatformSPN: '$(ProductionServiceConnection)'
+
+                - task: PowerPlatformDeployPackage@2
+                  displayName: 'Deploy unified package to Production'
+                  inputs:
+                    authenticationType: 'PowerPlatformSPN'
+                    PowerPlatformSPN: '$(ProductionServiceConnection)'
+                    PackageFile: '$(Pipeline.Workspace)/D365FO-Release/UnifiedPackage/TemplatePackage.dll'
+                    Environment: '$(ProductionEnvironmentUrl)'
